@@ -1,0 +1,10 @@
+langchain
+langchain_community
+langchain_openai
+langgraph
+youtube-transcript-api
+fastapi
+uvicorn
+redis
+elasticsearch
+python-dotenv

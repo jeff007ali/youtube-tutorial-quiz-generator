@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Quiz Generator",
+  "version": "1.0.0",
+  "description": "Generate quizzes, summaries, and chat with YouTube video content using AI",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://youtube.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "YouTube Quiz Generator",
+    "default_icon": {
+      "16": "icons/youtube-quiz-generator.png",
+      "48": "icons/youtube-quiz-generator.png",
+      "128": "icons/youtube-quiz-generator.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "icons": {
+    "16": "icons/youtube-quiz-generator.png",
+    "48": "icons/youtube-quiz-generator.png",
+    "128": "icons/youtube-quiz-generator.png"
+  }
+} 
