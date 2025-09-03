@@ -217,7 +217,8 @@ def generate_quiz(request: QuizRequest):
     print("Generated Questions:", state["questions"])
 
     for question in state["questions"]:
-        question.pop('answer', None)  # Remove answers before sending to client
+        if hasattr(question, "answer"):
+            delattr(question, "answer")
 
     return {
         "video_id": video_id,
