@@ -4,8 +4,9 @@ class YouTubeQuizGenerator {
         this.backendUrl = 'http://localhost:8000';
         this.currentVideo = null;
         this.selectedDifficulty = 'easy';
+        this.numberOfQuestions = 5;
         this.quizData = null;
-        this.userAnswers = {};
+        this.userAnswers = [];
         
         this.initializeEventListeners();
         this.loadVideoInfo();
@@ -207,7 +208,7 @@ class YouTubeQuizGenerator {
                 video_id: this.currentVideo.videoId,
                 video_url: this.currentVideo.videoUrl,
                 difficulty: this.selectedDifficulty,
-                num_questions: 5
+                num_questions: this.numberOfQuestions
             });
 
             this.quizData = response;
@@ -226,7 +227,7 @@ class YouTubeQuizGenerator {
         const quizSection = document.getElementById('quizSection');
         
         quizContent.innerHTML = '';
-        this.userAnswers = {};
+        this.userAnswers = new Array(this.numberOfQuestions).fill(null);
 
         quizData.questions.forEach((question, index) => {
             const questionDiv = document.createElement('div');
@@ -288,7 +289,7 @@ class YouTubeQuizGenerator {
                 video_id: this.currentVideo.videoId,
                 video_url: this.currentVideo.videoUrl,
                 user_answers: this.userAnswers,
-                quiz_data: this.quizData
+                quiz_id: this.quizData.quiz_id
             });
 
             this.displayQuizResults(response);
@@ -303,19 +304,20 @@ class YouTubeQuizGenerator {
 
     displayQuizResults(results) {
         const questions = document.querySelectorAll('.question');
+        const quiz_results = results.results;
         
         questions.forEach((question, index) => {
             const options = question.querySelectorAll('.option');
-            const correctAnswer = this.quizData.questions[index].correct_answer;
-            const userAnswer = this.userAnswers[index];
             
-            options.forEach((option, optionIndex) => {
+            options.forEach(option => {
                 option.style.pointerEvents = 'none'; // Disable further clicks
                 
-                if (optionIndex === correctAnswer) {
-                    option.classList.add('correct');
-                } else if (optionIndex === userAnswer && userAnswer !== correctAnswer) {
-                    option.classList.add('incorrect');
+                if (option.classList.contains('selected')) {
+                    if (quiz_results[index] === true) {
+                        option.classList.add('correct');
+                    } else {
+                        option.classList.add('incorrect');
+                    }
                 }
             });
         });

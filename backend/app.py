@@ -1,18 +1,21 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import re
 import redis
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 from typing_extensions import TypedDict
-from fastapi.responses import StreamingResponse
-import asyncio
 import os
 from dotenv import load_dotenv
+from uuid import uuid4
+import json
 
 # --- LangChain/LangGraph/Elasticsearch Imports ---
-from langchain_openai import OpenAI
-from langgraph.graph import StateGraph, START, END
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph
+from langchain.prompts import PromptTemplate
+
+from langchain_core.output_parsers import PydanticOutputParser
 
 app = FastAPI()
 
@@ -29,9 +32,10 @@ class QuizRequest(BaseModel):
     num_questions: int = 5
 
 class VerifyAnswersRequest(BaseModel):
-    video_id: str
+    video_url: HttpUrl
+    video_id: Optional[str] = None
     user_answers: List[Any]
-    correct_answers: List[Any]
+    quiz_id: str = None
 
 class SummaryRequest(BaseModel):
     video_url: HttpUrl
@@ -95,7 +99,7 @@ def get_transcript(request: TranscriptRequest):
         raise HTTPException(status_code=500, detail=f"Transcript extraction failed: {str(e)}")
 
 # --- LangChain LLM ---
-llm = OpenAI()
+llm = ChatOpenAI(model="gpt-4o-mini")
 
 # --- State Schema for LangGraph ---
 class QuizState(TypedDict, total=False):
@@ -107,7 +111,16 @@ class QuizState(TypedDict, total=False):
     summary: str
     topics: list[str]
     answer: str
-    questions: list[str]
+    questions: list[Dict[str, Any]]
+
+# --- Quiz Question Model for quiz_generator output parsing ---
+class QuizQuestion(BaseModel):
+    question: str
+    options: List[str]
+    answer: str
+
+class QuizQuestions(BaseModel):
+    questions: List[QuizQuestion]
 
 # --- LangGraph Node Functions ---
 def transcript_loader(state: QuizState) -> dict:
@@ -128,20 +141,37 @@ def quiz_generator(state: QuizState) -> dict:
     transcript = state.get("transcript", "")
     difficulty = state.get("difficulty", "medium")
     num_questions = state.get("num_questions", 5)
-    prompt = (
-        f"Generate {num_questions} {difficulty} level multiple-choice quiz questions from the following transcript. "
-        "Each question should have 1 correct answer and 3 plausible distractors. "
-        "Return the output in JSON format with keys: 'question', 'options' (list of 4), and 'answer' (the correct option text). "
-        f"Transcript:\n{transcript}..."
-    )
-    questions = llm.invoke(prompt)
-    return {"questions": questions}
+
+    generate_quiz_prompt = PromptTemplate.from_template("""
+        Generate {num_questions} {difficulty} level multiple-choice quiz questions 
+        from the following transcript. Each question should have exactly 4 options, 
+        with 1 correct answer and 3 plausible distractors. 
+        
+        Return the output in **valid JSON** only.
+        Use this schema:
+        {format_instructions}
+        
+        Transcript:
+        "{transcript}"
+    """)
+
+    parser = PydanticOutputParser(pydantic_object=QuizQuestions)
+    chain = generate_quiz_prompt | llm | parser
+
+    questions = chain.invoke({
+        "transcript": transcript,
+        "difficulty": difficulty,
+        "num_questions": num_questions,
+        "format_instructions": parser.get_format_instructions()
+    })
+
+    return {"questions": questions.questions}
 
 def summarizer(state: QuizState) -> dict:
     transcript = state.get("transcript", "")
     prompt = f"Summarize this transcript: {transcript}..."
     summary = llm.invoke(prompt)
-    return {"summary": summary}
+    return {"summary": summary.content}
 
 def topic_extractor(state: QuizState) -> dict:
     transcript = state.get("transcript", "")
@@ -150,14 +180,14 @@ def topic_extractor(state: QuizState) -> dict:
     print("######################################")
     prompt = f"Extract main topics with timestamps from this transcript: {transcript}..."
     topics = llm.invoke(prompt)
-    return {"topics": topics}
+    return {"topics": topics.content}
 
 def qna_agent(state: QuizState) -> dict:
     transcript = state.get("transcript", "")
     question = state.get("question", "")
-    prompt = f"Answer the question based on this context: {transcript}\nQuestion: {question}"
+    prompt = f"Give short and clear answer to the question based on this context: {transcript}\nQuestion: {question}"
     answer = llm.invoke(prompt)
-    return {"answer": answer}
+    return {"answer": answer.content}
 
 # --- StateGraph Setup ---
 graph = StateGraph(QuizState)
@@ -179,16 +209,38 @@ def generate_quiz(request: QuizRequest):
     state = {"video_id": video_id, "difficulty": request.difficulty, "num_questions": request.num_questions}
     state.update(quiz_graph.nodes["transcript_loader"].runnable.invoke(state))
     state.update(quiz_graph.nodes["quiz_generator"].runnable.invoke(state))
+
+    quiz_id = str(uuid4())
+    questions = QuizQuestions(questions=state["questions"])
+    redis_client.set(f"quiz:{quiz_id}", questions.model_dump_json(), ex=3600)  # Cache for 1 hour
+
+    print("Generated Questions:", state["questions"])
+
+    for question in state["questions"]:
+        question.pop('answer', None)  # Remove answers before sending to client
+
     return {
         "video_id": video_id,
         "difficulty": request.difficulty,
         "questions": state["questions"],
+        "quiz_id": quiz_id,
         "message": "Quiz generated via LangGraph."
     }
 
 @app.post("/verify-answers")
 def verify_answers(request: VerifyAnswersRequest):
-    results = [ua == ca for ua, ca in zip(request.user_answers, request.correct_answers)]
+    questions = []
+    raw_data = redis_client.get(f"quiz:{request.quiz_id}")
+    if raw_data:
+        quiz_data = QuizQuestions.model_validate_json(raw_data)
+        questions = quiz_data.questions
+
+    correct_answers = []
+    if questions:
+        correct_answers = [i for q in questions for i, op in enumerate(q.options) if q.answer == op]
+    
+    results = [ua == ca for ua, ca in zip(request.user_answers, correct_answers)]
+
     return {
         "video_id": request.video_id,
         "results": results,
